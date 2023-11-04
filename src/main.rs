@@ -1,7 +1,9 @@
 use axum::body::Body;
-use axum::http::{Request, StatusCode};
-use axum::Extension;
-use axum::{routing::get, Router};
+use axum::http::Request;
+use dotenvy::dotenv;
+use some_axum_code::router::api_router;
+use sqlx::postgres::PgPoolOptions;
+use std::time::Duration;
 use tower::ServiceBuilder;
 use tower_http::compression::CompressionLayer;
 use tower_http::request_id::{
@@ -13,16 +15,27 @@ use ulid::Ulid;
 
 #[tokio::main]
 async fn main() {
+    dotenv().expect(".env file should be present");
+
     tracing_subscriber::registry()
         .with(
             tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| {
-                "some_axum_code=debug,tower_http=debug,axum::rejection=trace".into()
+                "some_axum_code=debug,tower_http=debug,axum::rejection=trace,sqlx=debug".into()
             }),
         )
         .with(tracing_subscriber::fmt::layer())
         .init();
 
-    let app = api_router().layer(
+    let db_connection_str = std::env::var("DATABASE_URL").expect("DATABASE_URL should be present");
+
+    let pool = PgPoolOptions::new()
+        .max_connections(5)
+        .acquire_timeout(Duration::from_secs(3))
+        .connect(&db_connection_str)
+        .await
+        .expect("can't connect to database");
+
+    let app = api_router(pool).layer(
         ServiceBuilder::new()
             .layer(SetRequestIdLayer::x_request_id(UlidRequestId {
                 ulid: Ulid::new(),
@@ -68,15 +81,4 @@ impl MakeRequestId for UlidRequestId {
 
         Some(RequestId::new(id))
     }
-}
-
-fn api_router() -> Router {
-    Router::new().route("/", get(handler))
-}
-
-async fn handler(Extension(request_id): Extension<RequestId>) -> (StatusCode, String) {
-    (
-        StatusCode::OK,
-        request_id.header_value().to_str().unwrap().into(),
-    )
 }
